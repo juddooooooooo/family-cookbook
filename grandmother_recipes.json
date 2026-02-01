@@ -1,7 +1,7 @@
 [
     {
         "title": "Strudel Dough",
-        "author": "Grandmother",
+        "author": "Beila",
         "category": "Pastry",
         "ingredients": [
             "250 gr Butter",
@@ -61,7 +61,7 @@
     },
     {
         "title": "Lamb Marinade",
-        "author": "Carol Melaned",
+        "author": "Caron Melamed",
         "category": "Main",
         "ingredients": [
             "1 packet Fresh mint",
@@ -1145,4 +1145,5 @@
         "source_email_subject": "Recipe",
         "date_added": "2026-01-27"
     }
+
 ]
