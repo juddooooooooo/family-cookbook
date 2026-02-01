@@ -55,7 +55,7 @@ def save_to_github(new_recipe, image_file, image_name):
     # 1. Upload the Image
     try:
         repo.create_file(
-            path=f"recipe_images/{image_name}",
+            path=f"Recipe_images/{image_name}",
             message=f"Add image: {image_name}",
             content=image_file.getvalue()
         )
@@ -148,8 +148,8 @@ with tab1:
                     # Image from GitHub Raw URL
                     if r.get('source_file'):
                         # Construct raw github url for display
-                        # Format: https://raw.githubusercontent.com/{USER}/{REPO}/main/recipe_images/{FILE}
-                        img_url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/recipe_images/{r['source_file']}"
+                        # Format: https://raw.githubusercontent.com/{USER}/{REPO}/main/Recipe_images/{FILE}
+                        img_url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/Recipe_images/{r['source_file']}"
                         st.image(img_url, use_container_width=True)
                     
                     st.subheader(r['title'])
