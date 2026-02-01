@@ -11,7 +11,7 @@ from PIL import Image
 import io
 
 # --- CONFIGURATION & SECRETS ---
-st.set_page_config(page_title="Grandma's Recipes", page_icon="🥘", layout="wide")
+st.set_page_config(page_title="Beila's Recipe Compilation", page_icon="🥘", layout="wide")
 
 # We get these from Streamlit Secrets (configured later on the cloud)
 try:
