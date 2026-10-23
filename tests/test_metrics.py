@@ -1,9 +1,16 @@
 import pytest
+from helpers import FAST
 
-from tablewatch.state.metrics import idle_periods, sitting_metrics, state_at, table_summary
+from tablewatch.state.metrics import (
+    clip_records,
+    idle_periods,
+    sitting_metrics,
+    snapshot_at,
+    state_at,
+    state_segments,
+    table_summary,
+)
 from tablewatch.state.table_state import Sitting, TableState, TableStateMachine, Visit
-
-from helpers import FAST, run_timeline
 
 
 def records():
@@ -105,3 +112,40 @@ def test_replay_matches_live_state_machine():
             assert state_at("T1", t, list(sittings.values()), list(visits.values()))[0] == state, t
             checked += 1
     assert checked > 700
+
+
+def test_clip_records_for_replay():
+    sittings, visits = records()
+    s, v = clip_records(sittings, visits, 510)
+    assert [x.key for x in s] == ["T1-S1"] and s[0].ended_at is None
+    assert [(x.key, x.end) for x in v] == [("T1-V1", 200), ("T1-V2", None)]
+
+
+def test_snapshot_at():
+    sittings, visits = records()
+    snap = snapshot_at("T1", 600, sittings, visits)
+    assert snap.state == TableState.WAITING
+    assert snap.visit_count == 2
+    assert snap.last_visit_end == 530
+    assert snap.waiting_for_staff_s == 70
+    empty = snapshot_at("T1", 1200, sittings, visits)
+    assert empty.state == TableState.EMPTY and empty.empty_since == 1000
+
+
+def test_state_segments_cover_timeline_without_overlap():
+    sittings, visits = records()
+    segs = state_segments(["T1"], sittings, visits, run_start=0, now=1500)
+    spans = sorted((s.start, s.end, s.state.value) for s in segs)
+    assert spans == [
+        (0, 100, "EMPTY"),
+        (100, 160, "SEATED"),
+        (160, 200, "ATTENDED"),
+        (200, 500, "WAITING"),
+        (500, 530, "ATTENDED"),
+        (530, 800, "WAITING"),
+        (800, 820, "ATTENDED"),
+        (820, 1000, "WAITING"),
+        (1000, 1300, "EMPTY"),
+        (1300, 1400, "SEATED"),
+        (1400, 1500, "ATTENDED"),
+    ]

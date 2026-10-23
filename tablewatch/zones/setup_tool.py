@@ -179,15 +179,22 @@ def run_editor(source: str, out: str, at_s: float = 0.0, default_seats: int = 4,
     cv2.destroyAllWindows()
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source", required=True, help="video file, RTSP URL or webcam index")
     parser.add_argument("--out", default="config/zones.yaml", help="zones file to create or edit")
     parser.add_argument("--at", type=float, default=0.0, help="use the frame at this many seconds (files only)")
     parser.add_argument("--seats", type=int, default=4, help="default seats per table")
     parser.add_argument("--no-prompt", action="store_true", help="auto-name tables T1, T2, ... without asking")
-    args = parser.parse_args(argv)
+
+
+def run_from_args(args: argparse.Namespace) -> None:
     run_editor(args.source, args.out, args.at, args.seats, ask=not args.no_prompt)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_arguments(parser)
+    run_from_args(parser.parse_args(argv))
 
 
 if __name__ == "__main__":

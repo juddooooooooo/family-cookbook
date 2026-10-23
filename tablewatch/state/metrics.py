@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from itertools import pairwise
 from statistics import mean
 
-from tablewatch.state.table_state import Sitting, TableState, Visit
+from tablewatch.state.table_state import Sitting, TableSnapshot, TableState, Visit
 
 
 @dataclass
@@ -78,7 +79,7 @@ def sitting_metrics(sitting: Sitting, visits: Iterable[Visit], now: float) -> Si
     own = _visits_for(sitting, visits)
     end = sitting.ended_at if sitting.ended_at is not None else now
     gaps = []
-    for prev, cur in zip(own, own[1:]):
+    for prev, cur in pairwise(own):
         if prev.end is not None:
             gaps.append(max(0.0, cur.start - prev.end))
     return SittingMetrics(
@@ -164,3 +165,77 @@ def state_at(table_id: str, t: float, sittings: Iterable[Sitting], visits: Itera
     if latest.end is None or t < latest.end:
         return TableState.ATTENDED, latest.start
     return TableState.WAITING, latest.end
+
+
+def clip_records(sittings: Iterable[Sitting], visits: Iterable[Visit], t: float) -> tuple[list[Sitting], list[Visit]]:
+    """The records as they would have looked at time `t` (for replay)."""
+    clipped_sittings = [
+        Sitting(
+            s.key, s.table_id, s.seated_at,
+            ended_at=s.ended_at if s.ended_at is not None and s.ended_at <= t else None,
+            guests_max=s.guests_max,
+            food_served_at=s.food_served_at if s.food_served_at is not None and s.food_served_at <= t else None,
+        )
+        for s in sittings
+        if s.seated_at <= t
+    ]
+    clipped_visits = [
+        Visit(v.key, v.table_id, v.start, v.end if v.end is not None and v.end <= t else None, v.sitting_key)
+        for v in visits
+        if v.start <= t
+    ]
+    return clipped_sittings, clipped_visits
+
+
+def snapshot_at(table_id: str, t: float, sittings: Iterable[Sitting], visits: Iterable[Visit]) -> TableSnapshot:
+    """Rebuild a table snapshot at time `t` from stored records (head-counts are not stored)."""
+    sittings, visits = clip_records(sittings, visits, t)
+    state, since = state_at(table_id, t, sittings, visits)
+    sitting = next((s for s in sittings if s.table_id == table_id and s.ended_at is None), None)
+    own = _visits_for(sitting, visits) if sitting else []
+    ends = [v.end for v in own if v.end is not None]
+    return TableSnapshot(
+        table_id=table_id,
+        ts=t,
+        state=state,
+        state_since=since if since is not None else 0.0,
+        sitting_key=sitting.key if sitting else None,
+        seated_at=sitting.seated_at if sitting else None,
+        visit_count=len(own),
+        visit_started_at=own[-1].start if state == TableState.ATTENDED else None,
+        last_visit_end=max(ends) if ends else None,
+        empty_since=(since if since is not None else 0.0) if state == TableState.EMPTY else None,
+        food_served_at=sitting.food_served_at if sitting else None,
+    )
+
+
+@dataclass
+class Segment:
+    table_id: str
+    state: TableState
+    start: float
+    end: float
+    sitting_key: str | None = None
+
+
+def state_segments(
+    table_ids: Iterable[str], sittings: Iterable[Sitting], visits: Iterable[Visit], run_start: float, now: float
+) -> list[Segment]:
+    """Split each table's timeline into contiguous state segments up to `now`."""
+    sittings, visits = clip_records(sittings, visits, now)
+    segments: list[Segment] = []
+    for table_id in table_ids:
+        for idle in idle_periods(table_id, sittings, run_start, now):
+            segments.append(Segment(table_id, TableState.EMPTY, idle.start, idle.end))
+        for s in (s for s in sittings if s.table_id == table_id):
+            end = s.ended_at if s.ended_at is not None else now
+            cursor, waiting_state = s.seated_at, TableState.SEATED
+            for v in _visits_for(s, visits):
+                v_end = min(v.end if v.end is not None else now, end)
+                if v.start > cursor:
+                    segments.append(Segment(table_id, waiting_state, cursor, v.start, s.key))
+                segments.append(Segment(table_id, TableState.ATTENDED, max(v.start, cursor), v_end, s.key))
+                cursor, waiting_state = max(cursor, v_end), TableState.WAITING
+            if end > cursor:
+                segments.append(Segment(table_id, waiting_state, cursor, end, s.key))
+    return [seg for seg in segments if seg.end > seg.start]

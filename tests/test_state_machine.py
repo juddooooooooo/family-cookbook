@@ -1,8 +1,7 @@
 import pytest
+from helpers import FAST, of_type, run_timeline
 
 from tablewatch.state.table_state import EventType, TableState, TableStateMachine
-
-from helpers import FAST, of_type, run_timeline
 
 
 def make() -> TableStateMachine:

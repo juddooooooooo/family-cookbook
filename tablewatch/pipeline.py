@@ -21,7 +21,7 @@ from tablewatch.classification.roles import RoleClassifier, build_role_classifie
 from tablewatch.config import AppConfig
 from tablewatch.core import Detection, Role, Track, fmt_duration
 from tablewatch.detection.detector import Detector, UltralyticsDetector
-from tablewatch.input.source import Frame, VideoSource, open_source
+from tablewatch.input.source import Frame, open_source
 from tablewatch.output.annotator import Annotator, VideoWriter
 from tablewatch.state.food import FoodMonitor
 from tablewatch.state.table_state import EventType, TableEvent, TableSnapshot, TableStateMachine
@@ -49,23 +49,20 @@ class FrameResult:
     alerts: AlertUpdate = field(default_factory=AlertUpdate)
 
 
-class Pipeline:
+class ServiceMonitor:
+    """Table-level logic, independent of vision: state machines, food signal,
+    alerts, persistence and notifications. Fed with per-table head-counts.
+    """
+
     def __init__(
         self,
         cfg: AppConfig,
         zone_map: ZoneMap,
-        detector: Detector,
-        tracker: Tracker,
-        classifier: RoleClassifier,
         store: EventStore | None = None,
         dispatcher: NotificationDispatcher | None = None,
     ):
         self.cfg = cfg
         self.zone_map = zone_map
-        self.detector = detector
-        self.tracker = tracker
-        self.classifier = classifier
-        self.assigner = ZoneAssigner(zone_map, forget_after_s=cfg.roles.forget_after_s)
         self.machines = {z.table_id: TableStateMachine(z.table_id, cfg.state) for z in zone_map.zones}
         self.food = {z.table_id: FoodMonitor(cfg.food) for z in zone_map.zones} if cfg.food.enabled else {}
         self.alerts = AlertEngine(build_rules(cfg.alerts), cfg.alerts.repeat_every_s)
@@ -74,62 +71,43 @@ class Pipeline:
         self.run_id: int | None = None
         self._last_status_ts = -float("inf")
 
-    def start_run(self, source: VideoSource, media_start: float | None = None) -> None:
+    def start_run(self, source: str, is_live: bool, fps: float | None, media_start: float | None = None) -> None:
         if self.store is None:
             return
         tables = [{"table_id": z.table_id, "seats": z.seats} for z in self.zone_map.zones]
-        self.run_id = self.store.start_run(
-            source.uri, source.is_live, source.fps, tables, self.cfg.to_dict(), media_start
-        )
+        self.run_id = self.store.start_run(source, is_live, fps, tables, self.cfg.to_dict(), media_start)
         log.info("Run %d started (db: %s)", self.run_id, self.store.path)
 
-    def step(self, frame: Frame) -> FrameResult:
-        ts = frame.ts
-        found = self.detector.detect(frame.image)
-        tracks = self.tracker.update(found.people, ts)
-        self.assigner.update(tracks, ts)
-        self.classifier.update(tracks, frame.image, ts)
-
-        guests = dict.fromkeys(self.machines, 0)
-        staff = dict.fromkeys(self.machines, 0)
-        staff_since: dict[str, float] = {}
-        for t in tracks:
-            if t.zone_id is None:
-                continue
-            if t.role == Role.STAFF:
-                staff[t.zone_id] += 1
-                staff_since[t.zone_id] = min(staff_since.get(t.zone_id, ts), t.zone_entered_ts or ts)
-            else:
-                guests[t.zone_id] += 1
-
+    def update(
+        self,
+        ts: float,
+        guests: dict[str, int],
+        staff: dict[str, int],
+        staff_since: dict[str, float] | None = None,
+        item_counts: dict[str, int] | None = None,
+        wall_time: float | None = None,
+    ) -> tuple[list[TableEvent], AlertUpdate, dict[str, TableSnapshot]]:
+        staff_since = staff_since or {}
         events: list[TableEvent] = []
         for table_id, sm in self.machines.items():
-            events += sm.update(ts, guests[table_id], staff[table_id], staff_since.get(table_id))
-
-        if self.food:
-            events += self._update_food(found.objects, ts)
-
+            events += sm.update(ts, guests.get(table_id, 0), staff.get(table_id, 0), staff_since.get(table_id))
+        if self.food and item_counts is not None:
+            events += self._update_food(item_counts, ts)
         snapshots = {tid: sm.snapshot(ts) for tid, sm in self.machines.items()}
-        alert_update = self.alerts.evaluate(snapshots.values(), ts, frame.wall_time)
+        alert_update = self.alerts.evaluate(snapshots.values(), ts, wall_time)
         self._persist(events, alert_update, snapshots, ts)
         for e in events:
             if e.type in LOGGED_EVENTS:
                 log.info("[%s] %s", fmt_duration(e.ts), _describe_event(e))
-        return FrameResult(frame, tracks, found.objects, snapshots, events, alert_update)
+        return events, alert_update, snapshots
 
-    def _update_food(self, objects: list[Detection], ts: float) -> list[TableEvent]:
-        counts = dict.fromkeys(self.machines, 0)
-        for det in objects:
-            x1, y1, x2, y2 = det.xyxy
-            table_id = self.zone_map.assign(((x1 + x2) / 2, (y1 + y2) / 2))
-            if table_id is not None:
-                counts[table_id] += 1
+    def _update_food(self, counts: dict[str, int], ts: float) -> list[TableEvent]:
         events = []
         for table_id, monitor in self.food.items():
             sm = self.machines[table_id]
             snap = sm.snapshot(ts)
             last_staff = ts if snap.staff > 0 else snap.last_visit_end
-            if monitor.update(ts, counts[table_id], snap.sitting_key, snap.visit_count, last_staff):
+            if monitor.update(ts, counts.get(table_id, 0), snap.sitting_key, snap.visit_count, last_staff):
                 events += sm.mark_food_served(ts)
         return events
 
@@ -154,6 +132,58 @@ class Pipeline:
             self.store.end_run(self.run_id, last_ts)
         if self.dispatcher is not None:
             self.dispatcher.close()
+
+
+class Pipeline:
+    """Vision front-end: turns frames into per-table head-counts for the ServiceMonitor."""
+
+    def __init__(
+        self,
+        cfg: AppConfig,
+        zone_map: ZoneMap,
+        detector: Detector,
+        tracker: Tracker,
+        classifier: RoleClassifier,
+        monitor: ServiceMonitor,
+    ):
+        self.cfg = cfg
+        self.zone_map = zone_map
+        self.detector = detector
+        self.tracker = tracker
+        self.classifier = classifier
+        self.assigner = ZoneAssigner(zone_map, forget_after_s=cfg.roles.forget_after_s)
+        self.monitor = monitor
+
+    def step(self, frame: Frame) -> FrameResult:
+        ts = frame.ts
+        found = self.detector.detect(frame.image)
+        tracks = self.tracker.update(found.people, ts)
+        self.assigner.update(tracks, ts)
+        self.classifier.update(tracks, frame.image, ts)
+
+        guests: dict[str, int] = {}
+        staff: dict[str, int] = {}
+        staff_since: dict[str, float] = {}
+        for t in tracks:
+            if t.zone_id is None:
+                continue
+            if t.role == Role.STAFF:
+                staff[t.zone_id] = staff.get(t.zone_id, 0) + 1
+                staff_since[t.zone_id] = min(staff_since.get(t.zone_id, ts), t.zone_entered_ts or ts)
+            else:
+                guests[t.zone_id] = guests.get(t.zone_id, 0) + 1
+
+        item_counts = None
+        if self.monitor.food:
+            item_counts = {}
+            for det in found.objects:
+                x1, y1, x2, y2 = det.xyxy
+                table_id = self.zone_map.assign(((x1 + x2) / 2, (y1 + y2) / 2))
+                if table_id is not None:
+                    item_counts[table_id] = item_counts.get(table_id, 0) + 1
+
+        events, alerts, snapshots = self.monitor.update(ts, guests, staff, staff_since, item_counts, frame.wall_time)
+        return FrameResult(frame, tracks, found.objects, snapshots, events, alerts)
 
 
 def _describe_event(e: TableEvent) -> str:
@@ -181,8 +211,8 @@ def build_pipeline(cfg: AppConfig, zone_map: ZoneMap, fps: float, with_store: bo
         min_consecutive_frames=trk.min_consecutive_frames,
     )
     store = EventStore(cfg.storage.db_path) if with_store else None
-    dispatcher = NotificationDispatcher.from_config(cfg.alerts.notifiers)
-    return Pipeline(cfg, zone_map, detector, tracker, build_role_classifier(cfg.roles), store, dispatcher)
+    monitor = ServiceMonitor(cfg, zone_map, store, NotificationDispatcher.from_config(cfg.alerts.notifiers))
+    return Pipeline(cfg, zone_map, detector, tracker, build_role_classifier(cfg.roles), monitor)
 
 
 def run(
@@ -200,7 +230,7 @@ def run(
         zones = zone_map.for_frame_size(*source.frame_size)
         log.info("Source %s: %dx%d, processing at %.1f fps", inp.source, *source.frame_size, source.fps)
         pipeline = build_pipeline(cfg, zones, source.fps)
-        pipeline.start_run(source, media_start)
+        pipeline.monitor.start_run(source.uri, source.is_live, source.fps, media_start)
         annotator = Annotator(zones, cfg.output.blur_heads) if (cfg.output.video_path or cfg.output.show_window) else None
         if cfg.output.video_path:
             writer = VideoWriter(cfg.output.video_path, source.fps)
@@ -213,7 +243,7 @@ def run(
                 if annotator is not None:
                     image = annotator.draw(
                         frame.image, result.tracks, result.snapshots, frame.ts,
-                        pipeline.alerts.active_tables(), result.objects,
+                        pipeline.monitor.alerts.active_tables(), result.objects,
                     )
                     if writer:
                         writer.write(image)
@@ -227,11 +257,11 @@ def run(
         except KeyboardInterrupt:
             log.info("Interrupted")
         finally:
-            pipeline.finish(last_ts)
+            pipeline.monitor.finish(last_ts)
             if writer:
                 writer.close()
                 log.info("Annotated video written to %s", cfg.output.video_path)
-    return pipeline.run_id
+    return pipeline.monitor.run_id
 
 
 def _show(image: np.ndarray) -> bool:

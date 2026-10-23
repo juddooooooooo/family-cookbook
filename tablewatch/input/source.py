@@ -239,7 +239,7 @@ class StreamSource(VideoSource):
         index = 0
         while not self._stop.is_set():
             with self._cond:
-                self._cond.wait_for(lambda: self._seq != last_seq or self._stop.is_set(), timeout=1.0)
+                self._cond.wait_for(lambda seen=last_seq: self._seq != seen or self._stop.is_set(), timeout=1.0)
                 if self._seq == last_seq or self._latest is None:
                     continue
                 image, captured = self._latest

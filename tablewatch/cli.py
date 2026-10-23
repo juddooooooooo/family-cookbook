@@ -4,6 +4,7 @@
     python -m tablewatch run       --source data/sample.mp4 --output outputs/annotated.mp4
     python -m tablewatch report                                       # metrics for the latest run
     python -m tablewatch dashboard                                    # Streamlit UI
+    python -m tablewatch simulate  --hours 3                          # synthetic data, no video needed
 """
 
 from __future__ import annotations
@@ -109,6 +110,19 @@ def cmd_report(args: argparse.Namespace) -> None:
             print(f"  [{fmt_duration(a['ts'])}] {a['message']}  ({resolved})")
 
 
+def cmd_simulate(args: argparse.Namespace) -> None:
+    from tablewatch.simulate import simulate
+
+    cfg = _config(args)
+    if args.db:
+        cfg.storage.db_path = args.db
+    if not args.verbose:
+        logging.getLogger("tablewatch.pipeline").setLevel(logging.WARNING)
+    start = datetime.fromisoformat(args.start_time) if args.start_time else None
+    run_id = simulate(cfg, args.tables, args.hours, args.seed, args.live, args.speed, start, notify=args.notify)
+    print(f"Simulated run {run_id} written to {cfg.storage.db_path}. View it: python -m tablewatch dashboard --db {cfg.storage.db_path}")
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     app = Path(__file__).parent / "dashboard" / "app.py"
     db = args.db or _config(args).storage.db_path
@@ -117,9 +131,9 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
 
 
 def cmd_zones(args: argparse.Namespace) -> None:
-    from tablewatch.zones.setup_tool import main as zones_main
+    from tablewatch.zones.setup_tool import run_from_args
 
-    zones_main(args.rest)
+    run_from_args(args)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -145,13 +159,29 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--run", type=int, help="run id (default: latest)")
     p.set_defaults(func=cmd_report)
 
+    p = sub.add_parser("simulate", help="generate a synthetic service (no video needed) for demos")
+    p.add_argument("--db", help="SQLite database (default: from config)")
+    p.add_argument("--tables", type=int, default=8)
+    p.add_argument("--hours", type=float, default=3.0)
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--live", action="store_true", help="write in (accelerated) real time so the dashboard can follow")
+    p.add_argument("--speed", type=float, default=30.0, help="with --live: simulated seconds per real second")
+    p.add_argument("--start-time", help="clock time of the simulated service start, e.g. 2026-10-23T18:00")
+    p.add_argument("--notify", action="store_true", help="send alerts to the configured notifiers")
+    p.add_argument("--verbose", action="store_true", help="log every state change")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE", help="override any config value")
+    p.set_defaults(func=cmd_simulate)
+
     p = sub.add_parser("dashboard", help="start the Streamlit dashboard")
     p.add_argument("--db", help="SQLite database (default: from config)")
     p.add_argument("--port", type=int, default=8501)
     p.set_defaults(func=cmd_dashboard)
 
-    p = sub.add_parser("zones", help="draw table zones on a frame", add_help=False)
-    p.add_argument("rest", nargs=argparse.REMAINDER)
+    from tablewatch.zones import setup_tool
+
+    p = sub.add_parser("zones", help="draw table zones on a frame", description=setup_tool.__doc__,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    setup_tool.add_arguments(p)
     p.set_defaults(func=cmd_zones)
 
     args = parser.parse_args(argv)

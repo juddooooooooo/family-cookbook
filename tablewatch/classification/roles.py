@@ -133,9 +133,9 @@ class HeuristicRoleClassifier(RoleClassifier):
 
     def _staff_reason(self, hist: _History) -> str | None:
         cfg = self.cfg
-        if cfg.uniform.enabled and hist.uniform_obs >= cfg.uniform.min_observations:
-            if hist.uniform_score >= cfg.uniform.min_fraction:
-                return "uniform"
+        uniform = cfg.uniform
+        if uniform.enabled and hist.uniform_obs >= uniform.min_observations and hist.uniform_score >= uniform.min_fraction:
+            return "uniform"
         if cfg.min_zones_for_staff and len(hist.zones_visited) >= cfg.min_zones_for_staff:
             return "multi-zone"
         if cfg.standing_staff_s and hist.standing_s >= cfg.standing_staff_s:

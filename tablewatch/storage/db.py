@@ -110,6 +110,7 @@ class RunInfo:
     last_ts: float
     ended_wall: float | None
     tables: list[dict[str, Any]]
+    config: dict[str, Any]
 
     @property
     def is_running(self) -> bool:
@@ -238,6 +239,7 @@ class EventStore:
                 run_id=r["run_id"], source=r["source"], is_live=bool(r["is_live"]), fps=r["fps"],
                 started_wall=r["started_wall"], media_start=r["media_start"], last_ts=r["last_ts"] or 0.0,
                 ended_wall=r["ended_wall"], tables=json.loads(r["tables_json"] or "[]"),
+                config=json.loads(r["config_json"] or "{}"),
             )
             for r in rows
         ]

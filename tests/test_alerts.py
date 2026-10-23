@@ -4,6 +4,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+from helpers import FAST
 
 from tablewatch.alerts.notifiers import (
     RAISED,
@@ -17,8 +18,6 @@ from tablewatch.alerts.notifiers import (
 from tablewatch.alerts.rules import AlertEngine, LongSittingRule, NoFirstVisitRule, VisitGapRule, build_rules
 from tablewatch.config import AlertConfig, NotifierConfig
 from tablewatch.state.table_state import TableSnapshot, TableState, TableStateMachine
-
-from helpers import FAST
 
 NO_VISIT_S = 300
 GAP_S = 600

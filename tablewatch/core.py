@@ -72,7 +72,7 @@ def fmt_duration(seconds: float | None) -> str:
     """Format seconds as m:ss (or h:mm:ss); '-' for None."""
     if seconds is None:
         return "-"
-    seconds = max(0, int(round(seconds)))
+    seconds = max(0, round(float(seconds)))  # float(): numpy float32 would round to a float
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"

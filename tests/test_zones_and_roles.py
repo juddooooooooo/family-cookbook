@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
+from tablewatch.classification.roles import HeuristicRoleClassifier, build_role_classifier, uniform_fraction
 from tablewatch.config import RoleConfig, UniformConfig
 from tablewatch.core import Role, Track
-from tablewatch.classification.roles import HeuristicRoleClassifier, build_role_classifier, uniform_fraction
 from tablewatch.zones.assigner import ZoneAssigner
 from tablewatch.zones.setup_tool import ZoneEditor
 from tablewatch.zones.zones import TableZone, ZoneMap, load_zones, save_zones

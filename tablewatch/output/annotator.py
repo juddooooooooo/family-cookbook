@@ -8,18 +8,14 @@ import cv2
 import numpy as np
 
 from tablewatch.core import Detection, Role, Track, fmt_duration
+from tablewatch.palette import ALERT_HEX, STATE_HEX, hex_to_bgr
 from tablewatch.state.table_state import TableSnapshot, TableState
 from tablewatch.zones.zones import ZoneMap
 
-# BGR
-STATE_COLOURS = {
-    TableState.EMPTY: (150, 150, 150),
-    TableState.SEATED: (0, 190, 255),  # amber: waiting for first visit
-    TableState.ATTENDED: (90, 200, 60),  # green: staff at table
-    TableState.WAITING: (230, 140, 40),  # blue: visited, waiting for next
-}
-ALERT_COLOUR = (40, 40, 230)  # red
-ROLE_COLOURS = {Role.GUEST: (255, 200, 80), Role.STAFF: (200, 70, 220)}
+# BGR, matching the dashboard (see tablewatch/palette.py)
+STATE_COLOURS = {state: hex_to_bgr(hex_) for state, hex_ in STATE_HEX["light"].items()}
+ALERT_COLOUR = hex_to_bgr(ALERT_HEX)
+ROLE_COLOURS = {Role.GUEST: (245, 245, 245), Role.STAFF: hex_to_bgr("#9085e9")}  # white / violet
 OBJECT_COLOUR = (120, 220, 255)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -36,7 +32,7 @@ def blur_heads(image: np.ndarray, tracks: list[Track]) -> None:
     """Blur the top of each person box in place so faces never reach the output."""
     ih, iw = image.shape[:2]
     for t in tracks:
-        x1, y1, x2, y2 = (int(v) for v in t.xyxy)
+        x1, y1, x2, _ = (int(v) for v in t.xyxy)
         x1, x2 = max(0, x1), min(iw, x2)
         head_h = int(max(t.height * 0.22, t.width * 0.45))
         hy1, hy2 = max(0, y1), min(ih, y1 + head_h)

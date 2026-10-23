@@ -109,7 +109,7 @@ def save_zones(zone_map: ZoneMap, path: str | Path) -> None:
             {
                 "table_id": z.table_id,
                 "seats": z.seats,
-                "polygon": [[int(round(x)), int(round(y))] for x, y in z.polygon],
+                "polygon": [[round(x), round(y)] for x, y in z.polygon],
             }
             for z in zone_map.zones
         ],
