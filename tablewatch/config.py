@@ -32,15 +32,7 @@ class DetectionConfig:
     confidence: float = 0.25  # low on purpose: ByteTrack uses weak boxes to bridge occlusions
     iou: float = 0.5
     image_size: int = 640
-    # COCO classes counted per table for the optional "food served" signal.
-    object_classes: list[str] = field(
-        default_factory=lambda: [
-            "cup", "wine glass", "bottle", "bowl", "fork", "knife", "spoon",
-            "sandwich", "pizza", "cake", "donut", "hot dog", "broccoli",
-            "carrot", "apple", "orange", "banana",
-        ]
-    )
-    object_confidence: float = 0.25
+    object_confidence: float = 0.25  # for the drink/food classes counted in `served`
 
 
 @dataclass
@@ -86,11 +78,21 @@ class StateConfig:
 
 
 @dataclass
-class FoodConfig:
-    enabled: bool = False
+class ServedConfig:
+    """Estimate when drinks and food reach each table from COCO object detections."""
+
+    enabled: bool = True
+    drink_classes: list[str] = field(default_factory=lambda: ["cup", "wine glass", "bottle"])
+    # COCO has no "plate": bowls and the food classes themselves stand in for it.
+    food_classes: list[str] = field(
+        default_factory=lambda: [
+            "bowl", "sandwich", "pizza", "cake", "donut", "hot dog",
+            "broccoli", "carrot", "apple", "orange", "banana",
+        ]
+    )
     window_s: float = 6.0  # rolling window for item counts
-    min_increase: int = 1  # items above the at-seating baseline that count as served
-    visit_window_s: float = 90.0  # increase must follow a staff visit within this time
+    min_increase: int = 1  # items above the pre-service level that count as served
+    visit_window_s: float = 90.0  # the increase must follow a staff visit within this time
 
 
 @dataclass
@@ -127,13 +129,14 @@ class OutputConfig:
 
 @dataclass
 class AppConfig:
+    site: str = "default"  # venue or camera name; keeps analytics from different cameras apart
     zones_path: str = "config/zones.yaml"
     input: InputConfig = field(default_factory=InputConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     roles: RoleConfig = field(default_factory=RoleConfig)
     state: StateConfig = field(default_factory=StateConfig)
-    food: FoodConfig = field(default_factory=FoodConfig)
+    served: ServedConfig = field(default_factory=ServedConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     output: OutputConfig = field(default_factory=OutputConfig)

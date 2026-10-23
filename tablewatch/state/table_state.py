@@ -45,6 +45,7 @@ class EventType(str, Enum):
     VISIT_STARTED = "visit_started"
     VISIT_ENDED = "visit_ended"
     VISIT_REASSIGNED = "visit_reassigned"  # a visit turned out not to belong to the sitting
+    DRINKS_SERVED = "drinks_served"
     FOOD_SERVED = "food_served"
 
 
@@ -78,6 +79,7 @@ class Sitting:
     seated_at: float
     ended_at: float | None = None
     guests_max: int = 0
+    drinks_served_at: float | None = None
     food_served_at: float | None = None
     visits: list[Visit] = field(default_factory=list)
 
@@ -107,6 +109,7 @@ class TableSnapshot:
     visit_started_at: float | None = None
     last_visit_end: float | None = None
     empty_since: float | None = None
+    drinks_served_at: float | None = None
     food_served_at: float | None = None
 
     @property
@@ -188,11 +191,13 @@ class TableStateMachine:
 
         return events
 
-    def mark_food_served(self, ts: float) -> list[TableEvent]:
-        if self.sitting is None or self.sitting.food_served_at is not None:
+    def mark_served(self, what: str, ts: float) -> list[TableEvent]:
+        """Record when drinks or food ("drinks" | "food") first reached the current sitting."""
+        attr, event = {"drinks": ("drinks_served_at", EventType.DRINKS_SERVED), "food": ("food_served_at", EventType.FOOD_SERVED)}[what]
+        if self.sitting is None or getattr(self.sitting, attr) is not None:
             return []
-        self.sitting.food_served_at = ts
-        return [TableEvent(EventType.FOOD_SERVED, self.table_id, ts, self.sitting.key)]
+        setattr(self.sitting, attr, ts)
+        return [TableEvent(event, self.table_id, ts, self.sitting.key)]
 
     def snapshot(self, ts: float) -> TableSnapshot:
         s, v = self.sitting, self.visit
@@ -210,6 +215,7 @@ class TableStateMachine:
             visit_started_at=attached_visit.start if attached_visit else None,
             last_visit_end=s.last_visit_end if s else None,
             empty_since=self.empty_since if not s else None,
+            drinks_served_at=s.drinks_served_at if s else None,
             food_served_at=s.food_served_at if s else None,
         )
 

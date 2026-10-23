@@ -1,10 +1,11 @@
-"""Optional "food served" signal from tableware / food detections (stretch goal).
+"""Estimate when drinks and food reach each table, from object detections.
 
-COCO has no "plate" class, so this counts cups, glasses, bowls, cutlery and
-food classes inside a table zone. When the smoothed count rises above the
-level seen before the first staff visit, shortly after a visit, the food is
-considered served. Small objects at a distance are detected poorly by nano
-models, so treat this as indicative only.
+COCO has no "plate" class, so drinks are counted from cups, glasses and
+bottles, and food from bowls and the food classes themselves. When the
+smoothed count of a category inside a table zone rises above its level before
+service, shortly after a staff visit, that category is marked served for the
+sitting. Small objects seen from a ceiling camera are detected unreliably, so
+these times are estimates: good for trends, not for timing one plate.
 """
 
 from __future__ import annotations
@@ -12,12 +13,24 @@ from __future__ import annotations
 from collections import deque
 from statistics import median
 
-from tablewatch.config import FoodConfig
+from tablewatch.config import ServedConfig
+
+DRINKS, FOOD = "drinks", "food"
+CATEGORIES = (DRINKS, FOOD)
 
 
-class FoodMonitor:
-    def __init__(self, cfg: FoodConfig | None = None):
-        self.cfg = cfg or FoodConfig()
+def class_categories(cfg: ServedConfig) -> dict[str, str]:
+    """COCO class name -> "drinks" | "food"."""
+    mapping = dict.fromkeys(cfg.drink_classes, DRINKS)
+    mapping.update(dict.fromkeys(cfg.food_classes, FOOD))
+    return mapping
+
+
+class ItemMonitor:
+    """Watches one category (drinks or food) on one table."""
+
+    def __init__(self, cfg: ServedConfig | None = None):
+        self.cfg = cfg or ServedConfig()
         self._counts: deque[tuple[float, int]] = deque()
         self._sitting_key: str | None = None
         self._baseline: float | None = None
@@ -31,7 +44,7 @@ class FoodMonitor:
         visit_count: int,
         last_staff_ts: float | None,
     ) -> bool:
-        """Return True exactly once per sitting, when food is judged to have arrived.
+        """Return True exactly once per sitting, when the items are judged to have arrived.
 
         `last_staff_ts` is `ts` while staff are at the table, otherwise the
         end of the most recent visit (None if there has been none).
