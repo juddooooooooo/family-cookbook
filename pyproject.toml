@@ -1,0 +1,20 @@
+[project]
+name = "tablewatch"
+version = "0.1.0"
+description = "Computer-vision pilot that tracks restaurant table service metrics from video."
+requires-python = ">=3.11"
+readme = "README.md"
+
+[project.scripts]
+tablewatch = "tablewatch.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["tablewatch*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

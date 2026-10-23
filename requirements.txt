@@ -1,0 +1,19 @@
+# Python 3.11+
+# Tip: on a CPU-only machine, install the much smaller CPU build of PyTorch first:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Computer vision
+ultralytics>=8.3.0        # YOLO11 / YOLOv8 detection (weights download on first run)
+trackers>=2.6.0           # Roboflow's ByteTrack implementation
+supervision>=0.26.0       # detection container used by `trackers`
+opencv-python>=4.9        # video I/O, drawing, zone-setup window
+numpy>=1.26
+
+# Config, storage, dashboard
+pyyaml>=6.0
+streamlit>=1.40
+pandas>=2.1
+altair>=5.2
+
+# Tests
+pytest>=8.0
