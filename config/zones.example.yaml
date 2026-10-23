@@ -1,0 +1,15 @@
+# Example zones file. Create your own with:
+#   python -m tablewatch zones --source data/sample.mp4 --out config/zones.yaml
+# Each polygon covers the floor area of a table *and its chairs*, in pixels of
+# a frame of `frame_size`; polygons are rescaled if the video resolution differs.
+frame_size: [1280, 720]
+tables:
+  - table_id: T1
+    seats: 4
+    polygon: [[120, 420], [380, 400], [420, 600], [110, 640]]
+  - table_id: T2
+    seats: 2
+    polygon: [[520, 380], [720, 370], [740, 540], [510, 560]]
+  - table_id: Window
+    seats: 6
+    polygon: [[850, 350], [1180, 340], [1230, 560], [860, 590]]
