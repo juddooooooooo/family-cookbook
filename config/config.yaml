@@ -1,6 +1,7 @@
 # TableWatch configuration. Every key is optional; defaults live in tablewatch/config.py.
 # Override any value on the command line: python -m tablewatch run --set state.seat_confirm_s=5
 
+site: main-dining-room         # name of this venue/camera; keeps analytics from different cameras apart
 zones_path: config/zones.yaml
 
 input:
@@ -48,11 +49,13 @@ state:
   visit_min_s: 2               # staff at table 2 s -> counts as a visit
   visit_end_grace_s: 4
 
-food:                          # stretch goal: tableware/food detections per table
-  enabled: false
+served:                        # when drinks and food reach each table (estimated from detections)
+  enabled: true
+  drink_classes: [cup, wine glass, bottle]
+  food_classes: [bowl, sandwich, pizza, cake, donut, hot dog, broccoli, carrot, apple, orange, banana]
   window_s: 6
   min_increase: 1
-  visit_window_s: 90
+  visit_window_s: 90           # items must appear within 90 s of a staff visit
 
 alerts:
   no_first_visit_s: 300        # seated 5 min without a staff visit

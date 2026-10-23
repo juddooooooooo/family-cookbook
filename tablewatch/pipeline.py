@@ -23,7 +23,7 @@ from tablewatch.core import Detection, Role, Track, fmt_duration
 from tablewatch.detection.detector import Detector, UltralyticsDetector
 from tablewatch.input.source import Frame, open_source
 from tablewatch.output.annotator import Annotator, VideoWriter
-from tablewatch.state.food import FoodMonitor
+from tablewatch.state.served import CATEGORIES, ItemMonitor, class_categories
 from tablewatch.state.table_state import EventType, TableEvent, TableSnapshot, TableStateMachine
 from tablewatch.storage.db import EventStore
 from tablewatch.tracking.tracker import ByteTrackTracker, Tracker
@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 LOGGED_EVENTS = {
     EventType.STATE_CHANGED,
     EventType.VISIT_ENDED,
+    EventType.DRINKS_SERVED,
     EventType.FOOD_SERVED,
 }
 
@@ -50,8 +51,9 @@ class FrameResult:
 
 
 class ServiceMonitor:
-    """Table-level logic, independent of vision: state machines, food signal,
-    alerts, persistence and notifications. Fed with per-table head-counts.
+    """Table-level logic, independent of vision: state machines, drinks/food
+    served signals, alerts, persistence and notifications. Fed with per-table
+    head-counts (and, optionally, per-table counts of drink and food items).
     """
 
     def __init__(
@@ -64,7 +66,11 @@ class ServiceMonitor:
         self.cfg = cfg
         self.zone_map = zone_map
         self.machines = {z.table_id: TableStateMachine(z.table_id, cfg.state) for z in zone_map.zones}
-        self.food = {z.table_id: FoodMonitor(cfg.food) for z in zone_map.zones} if cfg.food.enabled else {}
+        self.served = (
+            {(z.table_id, c): ItemMonitor(cfg.served) for z in zone_map.zones for c in CATEGORIES}
+            if cfg.served.enabled
+            else {}
+        )
         self.alerts = AlertEngine(build_rules(cfg.alerts), cfg.alerts.repeat_every_s)
         self.store = store
         self.dispatcher = dispatcher
@@ -75,7 +81,9 @@ class ServiceMonitor:
         if self.store is None:
             return
         tables = [{"table_id": z.table_id, "seats": z.seats} for z in self.zone_map.zones]
-        self.run_id = self.store.start_run(source, is_live, fps, tables, self.cfg.to_dict(), media_start)
+        self.run_id = self.store.start_run(
+            source, is_live, fps, tables, self.cfg.to_dict(), media_start, site=self.cfg.site
+        )
         log.info("Run %d started (db: %s)", self.run_id, self.store.path)
 
     def update(
@@ -84,15 +92,15 @@ class ServiceMonitor:
         guests: dict[str, int],
         staff: dict[str, int],
         staff_since: dict[str, float] | None = None,
-        item_counts: dict[str, int] | None = None,
+        item_counts: dict[str, dict[str, int]] | None = None,
         wall_time: float | None = None,
     ) -> tuple[list[TableEvent], AlertUpdate, dict[str, TableSnapshot]]:
         staff_since = staff_since or {}
         events: list[TableEvent] = []
         for table_id, sm in self.machines.items():
             events += sm.update(ts, guests.get(table_id, 0), staff.get(table_id, 0), staff_since.get(table_id))
-        if self.food and item_counts is not None:
-            events += self._update_food(item_counts, ts)
+        if self.served and item_counts is not None:
+            events += self._update_served(item_counts, ts)
         snapshots = {tid: sm.snapshot(ts) for tid, sm in self.machines.items()}
         alert_update = self.alerts.evaluate(snapshots.values(), ts, wall_time)
         self._persist(events, alert_update, snapshots, ts)
@@ -101,14 +109,16 @@ class ServiceMonitor:
                 log.info("[%s] %s", fmt_duration(e.ts), _describe_event(e))
         return events, alert_update, snapshots
 
-    def _update_food(self, counts: dict[str, int], ts: float) -> list[TableEvent]:
+    def _update_served(self, counts: dict[str, dict[str, int]], ts: float) -> list[TableEvent]:
+        """`counts[table_id][category]` = drink or food items seen in that zone this frame."""
         events = []
-        for table_id, monitor in self.food.items():
+        for (table_id, category), monitor in self.served.items():
             sm = self.machines[table_id]
             snap = sm.snapshot(ts)
             last_staff = ts if snap.staff > 0 else snap.last_visit_end
-            if monitor.update(ts, counts.get(table_id, 0), snap.sitting_key, snap.visit_count, last_staff):
-                events += sm.mark_food_served(ts)
+            n = counts.get(table_id, {}).get(category, 0)
+            if monitor.update(ts, n, snap.sitting_key, snap.visit_count, last_staff):
+                events += sm.mark_served(category, ts)
         return events
 
     def _persist(self, events: list[TableEvent], alerts: AlertUpdate, snapshots: dict[str, TableSnapshot], ts: float) -> None:
@@ -153,6 +163,7 @@ class Pipeline:
         self.classifier = classifier
         self.assigner = ZoneAssigner(zone_map, forget_after_s=cfg.roles.forget_after_s)
         self.monitor = monitor
+        self.item_category = class_categories(cfg.served)
 
     def step(self, frame: Frame) -> FrameResult:
         ts = frame.ts
@@ -174,13 +185,15 @@ class Pipeline:
                 guests[t.zone_id] = guests.get(t.zone_id, 0) + 1
 
         item_counts = None
-        if self.monitor.food:
+        if self.monitor.served:
             item_counts = {}
             for det in found.objects:
+                category = self.item_category.get(det.class_name)
                 x1, y1, x2, y2 = det.xyxy
                 table_id = self.zone_map.assign(((x1 + x2) / 2, (y1 + y2) / 2))
-                if table_id is not None:
-                    item_counts[table_id] = item_counts.get(table_id, 0) + 1
+                if category and table_id is not None:
+                    per_table = item_counts.setdefault(table_id, {})
+                    per_table[category] = per_table.get(category, 0) + 1
 
         events, alerts, snapshots = self.monitor.update(ts, guests, staff, staff_since, item_counts, frame.wall_time)
         return FrameResult(frame, tracks, found.objects, snapshots, events, alerts)
@@ -199,7 +212,7 @@ def build_pipeline(cfg: AppConfig, zone_map: ZoneMap, fps: float, with_store: bo
     det = cfg.detection
     detector = UltralyticsDetector(
         det.model, det.device, det.confidence, det.iou, det.image_size,
-        det.object_classes if cfg.food.enabled else [], det.object_confidence,
+        list(class_categories(cfg.served)) if cfg.served.enabled else [], det.object_confidence,
     )
     trk = cfg.tracking
     tracker = ByteTrackTracker(

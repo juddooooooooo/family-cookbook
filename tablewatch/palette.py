@@ -46,3 +46,13 @@ def hex_to_bgr(hex_colour: str) -> tuple[int, int, int]:
     h = hex_colour.lstrip("#")
     r, g, b = (int(h[i : i + 2], 16) for i in (0, 2, 4))
     return (b, g, r)
+
+
+# Analytics measures keep one colour each on every chart. Time to first visit
+# shares Seated's orange (it is time spent Seated). First visit, drinks and
+# food are drawn together, so that trio is validated for colour-vision
+# deficiency as a set; "volume" (sittings, turn time) is drawn on its own.
+MEASURE_HEX = {
+    "light": {"first_visit": "#eb6834", "drinks": "#6250d6", "food": "#1baf7a", "volume": "#2a78d6"},
+    "dark": {"first_visit": "#d95926", "drinks": "#9085e9", "food": "#199e70", "volume": "#3987e5"},
+}

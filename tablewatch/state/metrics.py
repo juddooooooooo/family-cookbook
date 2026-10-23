@@ -27,7 +27,9 @@ class SittingMetrics:
     visit_count: int
     time_to_first_visit_s: float | None
     visit_gaps_s: list[float] = field(default_factory=list)  # end of one visit -> start of the next
-    time_to_food_s: float | None = None
+    time_to_drinks_s: float | None = None  # seated -> drinks on the table (estimated)
+    time_to_food_s: float | None = None  # seated -> food on the table (estimated)
+    order_to_food_s: float | None = None  # first staff visit -> food on the table
 
     @property
     def max_gap_s(self) -> float | None:
@@ -92,10 +94,14 @@ def sitting_metrics(sitting: Sitting, visits: Iterable[Visit], now: float) -> Si
         visit_count=len(own),
         time_to_first_visit_s=max(0.0, own[0].start - sitting.seated_at) if own else None,
         visit_gaps_s=gaps,
-        time_to_food_s=(
-            max(0.0, sitting.food_served_at - sitting.seated_at) if sitting.food_served_at is not None else None
-        ),
+        time_to_drinks_s=_since(sitting.seated_at, sitting.drinks_served_at),
+        time_to_food_s=_since(sitting.seated_at, sitting.food_served_at),
+        order_to_food_s=_since(own[0].start, sitting.food_served_at) if own else None,
     )
+
+
+def _since(start: float, end: float | None) -> float | None:
+    return None if end is None else max(0.0, end - start)
 
 
 def idle_periods(table_id: str, sittings: Iterable[Sitting], run_start: float, now: float) -> list[IdlePeriod]:
@@ -174,6 +180,7 @@ def clip_records(sittings: Iterable[Sitting], visits: Iterable[Visit], t: float)
             s.key, s.table_id, s.seated_at,
             ended_at=s.ended_at if s.ended_at is not None and s.ended_at <= t else None,
             guests_max=s.guests_max,
+            drinks_served_at=s.drinks_served_at if s.drinks_served_at is not None and s.drinks_served_at <= t else None,
             food_served_at=s.food_served_at if s.food_served_at is not None and s.food_served_at <= t else None,
         )
         for s in sittings
@@ -205,6 +212,7 @@ def snapshot_at(table_id: str, t: float, sittings: Iterable[Sitting], visits: It
         visit_started_at=own[-1].start if state == TableState.ATTENDED else None,
         last_visit_end=max(ends) if ends else None,
         empty_since=(since if since is not None else 0.0) if state == TableState.EMPTY else None,
+        drinks_served_at=sitting.drinks_served_at if sitting else None,
         food_served_at=sitting.food_served_at if sitting else None,
     )
 

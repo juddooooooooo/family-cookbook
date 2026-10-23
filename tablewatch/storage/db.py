@@ -22,6 +22,7 @@ from tablewatch.state.table_state import EventType, Sitting, TableEvent, TableSn
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    site         TEXT NOT NULL DEFAULT 'default',  -- venue / camera the run watched
     source       TEXT NOT NULL,
     is_live      INTEGER NOT NULL,
     fps          REAL,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS sittings (
     seated_at      REAL NOT NULL,
     ended_at       REAL,
     guests_max     INTEGER,
+    drinks_served_at REAL,
     food_served_at REAL,
     PRIMARY KEY (run_id, sitting_key)
 );
@@ -90,6 +92,7 @@ CREATE TABLE IF NOT EXISTS table_status (
     visit_started_at  REAL,
     last_visit_end    REAL,
     empty_since       REAL,
+    drinks_served_at  REAL,
     food_served_at    REAL,
     updated_wall      REAL,
     PRIMARY KEY (run_id, table_id)
@@ -98,10 +101,19 @@ CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_run ON alerts(run_id, ts);
 """
 
+# Columns added after the first release: (table, column, declaration). Older
+# databases get them on open, so existing data keeps working.
+MIGRATIONS = [
+    ("runs", "site", "TEXT NOT NULL DEFAULT 'default'"),
+    ("sittings", "drinks_served_at", "REAL"),
+    ("table_status", "drinks_served_at", "REAL"),
+]
+
 
 @dataclass
 class RunInfo:
     run_id: int
+    site: str
     source: str
     is_live: bool
     fps: float | None
@@ -127,7 +139,15 @@ class EventStore:
             self.conn = sqlite3.connect(self.path, check_same_thread=False)
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.executescript(SCHEMA)
+            self._migrate()
         self.conn.row_factory = sqlite3.Row
+
+    def _migrate(self) -> None:
+        with self.conn:
+            for table, column, decl in MIGRATIONS:
+                existing = {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+                if column not in existing:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         self.conn.close()
@@ -142,13 +162,14 @@ class EventStore:
         tables: list[dict[str, Any]],
         config: dict[str, Any] | None = None,
         media_start: float | None = None,
+        site: str = "default",
     ) -> int:
         now = time.time()
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO runs (source, is_live, fps, started_wall, media_start, tables_json, config_json)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (source, int(is_live), fps, now, media_start or now, json.dumps(tables), json.dumps(config or {})),
+                "INSERT INTO runs (site, source, is_live, fps, started_wall, media_start, tables_json, config_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (site, source, int(is_live), fps, now, media_start or now, json.dumps(tables), json.dumps(config or {})),
             )
         return int(cur.lastrowid)
 
@@ -177,9 +198,10 @@ class EventStore:
                 "UPDATE sittings SET ended_at = ?, guests_max = ? WHERE run_id = ? AND sitting_key = ?",
                 (e.ts, e.data.get("guests_max"), run_id, e.sitting_key),
             )
-        elif e.type == EventType.FOOD_SERVED:
+        elif e.type in (EventType.DRINKS_SERVED, EventType.FOOD_SERVED):
+            column = "drinks_served_at" if e.type == EventType.DRINKS_SERVED else "food_served_at"
             c.execute(
-                "UPDATE sittings SET food_served_at = ? WHERE run_id = ? AND sitting_key = ?",
+                f"UPDATE sittings SET {column} = ? WHERE run_id = ? AND sitting_key = ?",
                 (e.ts, run_id, e.sitting_key),
             )
         elif e.type == EventType.VISIT_STARTED:
@@ -220,12 +242,12 @@ class EventStore:
                 self.conn.execute(
                     """INSERT OR REPLACE INTO table_status
                        (run_id, table_id, ts, state, state_since, guests, staff, sitting_key, seated_at, visit_count,
-                        visit_started_at, last_visit_end, empty_since, food_served_at, updated_wall)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        visit_started_at, last_visit_end, empty_since, drinks_served_at, food_served_at, updated_wall)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         run_id, s.table_id, s.ts, s.state.value, s.state_since, s.guests, s.staff, s.sitting_key,
                         s.seated_at, s.visit_count, s.visit_started_at, s.last_visit_end, s.empty_since,
-                        s.food_served_at, now,
+                        s.drinks_served_at, s.food_served_at, now,
                     ),
                 )
             self.conn.execute("UPDATE runs SET last_ts = ? WHERE run_id = ?", (last_ts, run_id))
@@ -236,7 +258,7 @@ class EventStore:
         rows = self.conn.execute("SELECT * FROM runs ORDER BY run_id DESC").fetchall()
         return [
             RunInfo(
-                run_id=r["run_id"], source=r["source"], is_live=bool(r["is_live"]), fps=r["fps"],
+                run_id=r["run_id"], site=_get(r, "site", "default"), source=r["source"], is_live=bool(r["is_live"]), fps=r["fps"],
                 started_wall=r["started_wall"], media_start=r["media_start"], last_ts=r["last_ts"] or 0.0,
                 ended_wall=r["ended_wall"], tables=json.loads(r["tables_json"] or "[]"),
                 config=json.loads(r["config_json"] or "{}"),
@@ -252,7 +274,8 @@ class EventStore:
         return [
             Sitting(
                 key=r["sitting_key"], table_id=r["table_id"], seated_at=r["seated_at"], ended_at=r["ended_at"],
-                guests_max=r["guests_max"] or 0, food_served_at=r["food_served_at"],
+                guests_max=r["guests_max"] or 0, drinks_served_at=_get(r, "drinks_served_at"),
+                food_served_at=r["food_served_at"],
             )
             for r in rows
         ]
@@ -279,3 +302,8 @@ class EventStore:
             sql += " LIMIT ?"
             args += (limit,)
         return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
+
+
+def _get(row: sqlite3.Row, column: str, default: Any = None) -> Any:
+    """Read a column that older databases (opened read-only, so not migrated) may lack."""
+    return row[column] if column in row.keys() else default  # noqa: SIM118 (`in row` tests values)

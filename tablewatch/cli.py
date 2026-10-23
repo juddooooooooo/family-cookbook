@@ -3,6 +3,7 @@
     python -m tablewatch zones     --source data/sample.mp4          # draw table zones
     python -m tablewatch run       --source data/sample.mp4 --output outputs/annotated.mp4
     python -m tablewatch report                                       # metrics for the latest run
+    python -m tablewatch analytics --csv sittings.csv                 # history across all runs
     python -m tablewatch dashboard                                    # Streamlit UI
     python -m tablewatch simulate  --hours 3                          # synthetic data, no video needed
 """
@@ -13,7 +14,7 @@ import argparse
 import logging
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
@@ -118,9 +119,61 @@ def cmd_simulate(args: argparse.Namespace) -> None:
         cfg.storage.db_path = args.db
     if not args.verbose:
         logging.getLogger("tablewatch.pipeline").setLevel(logging.WARNING)
+    if args.site:
+        cfg.site = args.site
     start = datetime.fromisoformat(args.start_time) if args.start_time else None
-    run_id = simulate(cfg, args.tables, args.hours, args.seed, args.live, args.speed, start, notify=args.notify)
-    print(f"Simulated run {run_id} written to {cfg.storage.db_path}. View it: python -m tablewatch dashboard --db {cfg.storage.db_path}")
+    run_ids = simulate(cfg, args.tables, args.hours, args.seed, args.live, args.speed, start, args.notify, args.days)
+    runs = ", ".join(str(r) for r in run_ids)
+    print(f"Simulated run(s) {runs} written to {cfg.storage.db_path}. View: python -m tablewatch dashboard --db {cfg.storage.db_path}")
+
+
+def cmd_analytics(args: argparse.Namespace) -> None:
+    import pandas as pd
+
+    from tablewatch.analytics.history import by_day, by_table, occupancy_frame, sittings_frame, summary
+    from tablewatch.storage.db import EventStore
+
+    db = args.db or _config(args).storage.db_path
+    if not Path(db).exists():
+        sys.exit(f"No database at {db}")
+    store = EventStore(db, read_only=True)
+    start = date.fromisoformat(args.date_from) if args.date_from else None
+    end = date.fromisoformat(args.date_to) if args.date_to else None
+    sites = [args.site] if args.site else None
+    df = sittings_frame(store, sites, start, end)
+    if df.empty:
+        sys.exit("No sittings in that range")
+    occ = occupancy_frame(store, sites, start, end)
+    s = summary(df, occ)
+
+    def m(v):
+        return "-" if v is None or pd.isna(v) else fmt_duration(v * 60)
+
+    print(f"{s['sittings']} sittings over {s['services']} service(s), {df['service_date'].min()} to {df['service_date'].max()}\n")
+    print(f"  avg turn time          {m(s['avg_turn_time_min'])}")
+    print(f"  avg to first visit     {m(s['avg_first_visit_min'])}")
+    print(f"  avg to drinks (est.)   {m(s['avg_drinks_min'])}")
+    print(f"  avg to food (est.)     {m(s['avg_food_min'])}")
+    print(f"  avg order to food      {m(s['avg_order_to_food_min'])}")
+    print(f"  avg gap between visits {m(s['avg_gap_min'])}")
+    print(f"  avg time to reset      {m(s['avg_reset_min'])}")
+    if s["utilisation_pct"] is not None:
+        print(f"  table utilisation      {s['utilisation_pct']:.0f}%")
+    print(f"  sittings with an alert {s['sittings_with_alert_pct']:.0f}%\n")
+
+    def show(frame):
+        frame = frame.copy()
+        for col in [c for c in frame.columns if c.endswith("_min")]:
+            frame[col] = frame[col].map(m)
+        if "utilisation_pct" in frame:
+            frame["utilisation_pct"] = frame["utilisation_pct"].map(lambda v: "-" if pd.isna(v) else f"{v:.0f}%")
+        print(frame.to_string(index=False), end="\n\n")
+
+    show(by_day(df))
+    show(by_table(df, occ))
+    if args.csv:
+        df.to_csv(args.csv, index=False)
+        print(f"Wrote {len(df)} sittings to {args.csv}")
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
@@ -166,11 +219,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--live", action="store_true", help="write in (accelerated) real time so the dashboard can follow")
     p.add_argument("--speed", type=float, default=30.0, help="with --live: simulated seconds per real second")
-    p.add_argument("--start-time", help="clock time of the simulated service start, e.g. 2026-10-23T18:00")
+    p.add_argument("--days", type=int, default=1, help="simulate this many consecutive evenings, ending today")
+    p.add_argument("--site", help="site name to record (default: from config)")
+    p.add_argument("--start-time", help="clock time of the first simulated service, e.g. 2026-10-23T18:00")
     p.add_argument("--notify", action="store_true", help="send alerts to the configured notifiers")
     p.add_argument("--verbose", action="store_true", help="log every state change")
     p.add_argument("--set", action="append", metavar="KEY=VALUE", help="override any config value")
     p.set_defaults(func=cmd_simulate)
+
+    p = sub.add_parser("analytics", help="service analytics across all recorded runs")
+    p.add_argument("--db", help="SQLite database (default: from config)")
+    p.add_argument("--site", help="only this site")
+    p.add_argument("--from", dest="date_from", help="first service date, e.g. 2026-10-01")
+    p.add_argument("--to", dest="date_to", help="last service date")
+    p.add_argument("--csv", help="also write one row per sitting to this CSV file")
+    p.set_defaults(func=cmd_analytics)
 
     p = sub.add_parser("dashboard", help="start the Streamlit dashboard")
     p.add_argument("--db", help="SQLite database (default: from config)")

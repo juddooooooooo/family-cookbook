@@ -3,7 +3,7 @@
   "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
   "hostRequirements": { "cpus": 4 },
   "onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && pip install --user torch torchvision --index-url https://download.pytorch.org/whl/cpu && pip install --user -r requirements.txt",
-  "postCreateCommand": "python -m tablewatch simulate --hours 3",
+  "postCreateCommand": "python -m tablewatch simulate --days 7 --site \"Demo bistro\"",
   "postAttachCommand": {
     "dashboard": "python -m streamlit run tablewatch/dashboard/app.py --server.headless true --server.enableCORS false --server.enableXsrfProtection false"
   },

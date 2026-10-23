@@ -2,6 +2,8 @@
 
 A computer-vision pilot that watches restaurant video and measures table service: how long guests wait for their first staff visit, how long between visits, how many visits each sitting gets, how long tables are occupied and how long they sit empty. It raises alerts when a table is being neglected.
 
+Behind the live table board, every sitting is recorded for **analytics**: table turn times, when drinks and food reach the table, waits by day and by hour, and per-table utilisation, across every service you record.
+
 The pilot runs on recorded video (stock footage or phone recordings). The same code runs on a live RTSP camera: change `input.source` to an `rtsp://` URL and nothing else changes.
 
 ```
@@ -25,11 +27,12 @@ tablewatch/
   tracking/        Tracker interface + ByteTrack (Roboflow `trackers`)
   classification/  RoleClassifier interface + heuristic staff/guest classifier
   zones/           table polygons, zone assignment, interactive zone-drawing tool
-  state/           per-table state machine, metrics, replay helpers, food-served signal
+  state/           per-table state machine, metrics, replay helpers, drinks/food-served signals
+  analytics/       service history across runs: one row per sitting, daily/hourly/per-table rollups
   alerts/          alert rules + engine, notifiers (console, webhook, Slack, WhatsApp stub)
   storage/         SQLite event store
   output/          annotated video renderer
-  dashboard/       Streamlit app
+  dashboard/       Streamlit app: Live monitoring and Analytics pages
   pipeline.py      wires it together (Pipeline = vision, ServiceMonitor = table logic)
   simulate.py      synthetic service for demos without video
   cli.py           `python -m tablewatch ...`
@@ -66,6 +69,13 @@ python -m tablewatch dashboard                   # opens http://localhost:8501
 
 The run has finished, so the dashboard opens in **Replay**. Drag the replay slider to scrub through the evening. To watch tables change live, run `python -m tablewatch simulate --hours 1 --live --speed 30` in one terminal and the dashboard in another, then pick the newest run in the sidebar.
 
+For the **Analytics** page, simulate a week of evenings (Fridays and Saturdays are busier and slower), then open Analytics in the dashboard's sidebar:
+
+```bash
+python -m tablewatch simulate --days 7 --site "Demo bistro"
+python -m tablewatch analytics          # the same numbers in the terminal; add --csv sittings.csv to export
+```
+
 **B. The vision pipeline, on a public test clip.** OpenCV's pedestrian clip isn't a restaurant, so `config/demo_video.yaml` draws three pretend "tables" on a walkway and shortens the timers. People walking through then trigger state changes and alerts:
 
 ```bash
@@ -77,7 +87,7 @@ python -m tablewatch dashboard --db data/demo_video.db
 
 Open `outputs/demo_video_annotated.mp4` in VLC. It's MPEG-4, which most browsers won't play. You'll see people boxed as staff or guest, zones coloured by state with their timers, and heads blurred. Walkers get tagged as staff because of the "distance walked" rule.
 
-**C. In the browser, with nothing installed (GitHub Codespaces).** On the repo page, go to **Code → Codespaces → Create codespace on this branch**. The first build installs everything (about 5 minutes) and generates the simulated service. The dashboard then opens in a preview tab on port 8501, and step B works in the Codespace terminal too. The zone-drawing window needs a desktop, so draw zones for your own footage on your own machine.
+**C. In the browser, with nothing installed (GitHub Codespaces).** On the repo page, go to **Code → Codespaces → Create codespace on this branch**. The first build installs everything (about 5 minutes) and generates a simulated week of service. The dashboard then opens in a preview tab on port 8501, and step B works in the Codespace terminal too. The zone-drawing window needs a desktop, so draw zones for your own footage on your own machine.
 
 **D. Your own restaurant footage.** Follow steps 1–4 below.
 
@@ -165,6 +175,15 @@ python -m tablewatch dashboard          # or: streamlit run tablewatch/dashboard
 - **Service metrics** covers time to first visit, gaps between visits and visits per sitting (one dot per sitting, with the alert threshold marked), a breakdown of each sitting, and where each table's time went (idle vs occupied).
 - **Table view** lists every number behind the charts.
 
+The **Analytics** page covers every recorded service, filtered by date range, site and table:
+- headline numbers: sittings, average turn time, time to first visit, drinks and food, table utilisation, and the share of sittings that raised an alert
+- **day by day**: time from seating to first visit, drinks and food, and average turn time
+- **through the evening**: sittings started per hour, and waits by the hour guests sat down
+- **by table**: turn time, waits, alerts and utilisation per table
+- **every sitting**: one row per sitting with all its timings, downloadable as CSV
+
+The same history is available from the command line: `python -m tablewatch analytics [--site NAME] [--from 2026-10-01] [--to 2026-10-31] [--csv out.csv]`. Sittings after midnight count toward the previous evening's service.
+
 ## How table state works
 
 ```
@@ -199,8 +218,15 @@ What counts as a service visit:
 | turn time | guests left − guests seated |
 | idle time | time with no sitting (from run start, between sittings, and until now) |
 | utilisation | occupied time ÷ (occupied + idle) |
+| time to drinks / food | drinks / food first seen on the table − seated time (estimated, see below) |
+| order to food | food on the table − first staff visit (roughly order to plate) |
+| reset time | first staff visit at the empty table − guests left |
 
-The optional **food served** signal (`food.enabled: true`) counts COCO tableware and food detections (cup, glass, bowl, cutlery, food classes) in each zone. When the count rises above its pre-service level shortly after a visit, it records the time from seating to food served. COCO has no "plate" class and small objects are hard to see from a distance, so treat this signal as indicative only.
+**Drinks and food served** (`served:` in `config.yaml`, on by default) are estimated from object detections inside each table zone:
+- drinks: cups, wine glasses and bottles
+- food: bowls and the COCO food classes. COCO has no "plate" class, so bowls stand in for it.
+
+When the count in a category rises above its level before service, within `visit_window_s` of a staff visit, the sitting is marked as served. Small objects seen from a ceiling camera are detected unreliably, so use these times for trends rather than for timing a single plate. Raising `detection.image_size` to 960 or 1280 helps. For exact times, wire in your POS: a `drinks_served` or `food_served` event in the `events` table is all the analytics need.
 
 ## Staff vs guest classification
 
@@ -251,6 +277,7 @@ The tests cover:
 - notifier isolation, and webhook/Slack payloads against a local HTTP server
 - zone geometry, rescaling, the YAML round-trip and the zone editor
 - the staff heuristics and uniform colour matching
+- drinks/food detection, the analytics rollups (checked end to end against a scripted sitting), and migration of older databases
 
 None of the tests needs a model or a video.
 
@@ -260,16 +287,18 @@ All `ts` columns are seconds since the run started; `runs.media_start` maps them
 
 | Table | Contents |
 |---|---|
-| `runs` | one row per processing run: source, fps, tables, config |
-| `events` | every state change, sitting start/end, visit start/end, food served |
+| `runs` | one row per processing run: site, source, fps, tables, config |
+| `events` | every state change, sitting start/end, visit start/end, drinks and food served |
 | `sittings` / `visits` | one row each, with start and end times |
 | `alerts` | raised, repeated and resolved alerts |
 | `table_status` | latest snapshot per table (what the live dashboard reads) |
+
+Set `site:` in `config.yaml` per camera or venue, so analytics from different cameras with the same table names stay apart. Databases from earlier versions are upgraded in place when the pipeline opens them.
 
 ## Known limitations and next steps
 
 - **The staff heuristic is the weakest link.** A waiter's first table visit can be missed until their track has done enough to be classified, though visits are backdated once it is. ID switches in crowded scenes reset a track's history. Enabling the uniform colour rule, or training a small classifier on staff/guest crops from the target venue, is the biggest accuracy win.
 - One camera per process. Cover more cameras by running one process per camera, each with its own zones, writing to the same database.
 - Occlusion: guests hidden behind staff are tolerated by `empty_confirm_s`. Heavy occlusion from a low camera angle will undercount.
-- Food served is indicative only (see above).
+- Drinks and food times are estimates from object detection (see above). A POS integration would make them exact.
 - **Licensing:** Ultralytics YOLO is AGPL-3.0. That's fine for a pilot, but a commercial product needs an Ultralytics Enterprise licence or a detector with a permissive licence behind the `Detector` interface.

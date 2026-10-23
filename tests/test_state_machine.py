@@ -193,9 +193,16 @@ def test_snapshot_timers():
     assert snap.time_in_state == pytest.approx(70.5)
 
 
-def test_food_served_marked_once_per_sitting():
+def test_served_milestones_marked_once_per_sitting():
     sm = make()
     run_timeline(sm, [(0, 20, 2, 0)])
-    assert len(sm.mark_food_served(25)) == 1
-    assert sm.mark_food_served(30) == []
-    assert sm.snapshot(30).food_served_at == 25
+    (drinks,) = sm.mark_served("drinks", 22)
+    assert drinks.type == EventType.DRINKS_SERVED and drinks.sitting_key == "T1-S1"
+    assert len(sm.mark_served("food", 25)) == 1
+    assert sm.mark_served("food", 30) == []
+    snap = sm.snapshot(30)
+    assert (snap.drinks_served_at, snap.food_served_at) == (22, 25)
+
+
+def test_served_ignored_without_a_sitting():
+    assert make().mark_served("food", 5) == []
