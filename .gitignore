@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Model weights (downloaded automatically by Ultralytics)
+*.pt
+*.onnx
+
+# Local data: videos, databases, rendered outputs (never commit footage)
+data/*
+!data/.gitkeep
+outputs/
+*.db
+*.db-wal
+*.db-shm
+*.mp4
+*.avi
+*.mov

@@ -1,0 +1,29 @@
+# First-look demo of the vision pipeline on OpenCV's public pedestrian test clip.
+# It is not a restaurant: three pretend "tables" are drawn on a walkway and the
+# timers are shortened so people walking through trigger state changes and alerts.
+# People walking past get tagged as staff by the "distance walked" rule.
+#
+#   curl -L -o data/vtest.avi https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi
+#   python -m tablewatch --config config/demo_video.yaml run
+#   python -m tablewatch --config config/demo_video.yaml report
+#   python -m tablewatch dashboard --db data/demo_video.db
+
+zones_path: config/demo_video_zones.yaml
+
+input:
+  source: data/vtest.avi
+  target_fps: 10
+
+state:
+  seat_confirm_s: 3
+  empty_confirm_s: 5
+
+alerts:
+  no_first_visit_s: 8
+  visit_gap_s: 8
+
+storage:
+  db_path: data/demo_video.db
+
+output:
+  video_path: outputs/demo_video_annotated.mp4

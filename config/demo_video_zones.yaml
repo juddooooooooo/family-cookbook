@@ -1,0 +1,7 @@
+# Zones for the demo clip (OpenCV's public pedestrian video, data/vtest.avi).
+# Three pretend "tables" drawn on the walkway; see config/demo_video.yaml.
+frame_size: [768, 576]
+tables:
+  - {table_id: T1, seats: 4, polygon: [[150, 170], [330, 170], [330, 250], [150, 250]]}
+  - {table_id: T2, seats: 2, polygon: [[560, 160], [690, 160], [690, 250], [560, 250]]}
+  - {table_id: T3, seats: 4, polygon: [[280, 250], [430, 250], [430, 320], [280, 320]]}
