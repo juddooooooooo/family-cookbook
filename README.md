@@ -33,7 +33,8 @@ tablewatch/
   pipeline.py      wires it together (Pipeline = vision, ServiceMonitor = table logic)
   simulate.py      synthetic service for demos without video
   cli.py           `python -m tablewatch ...`
-config/            config.yaml (all settings), zones.example.yaml
+config/            config.yaml (all settings), zones.example.yaml, demo_video*.yaml (first-look demo)
+.devcontainer/     GitHub Codespaces setup
 scripts/           download_pexels.py
 tests/             state machine, metrics, alerts, zones and role tests
 ```
@@ -54,14 +55,31 @@ pip install -r requirements.txt
 
 The YOLO weights (`yolo11n.pt`, about 6 MB) download automatically on the first run.
 
-### See the dashboard first (no video needed)
+## First look (about 10 minutes)
+
+**A. The dashboard, with no video at all.** A simulator feeds a realistic 3-hour service through the real state machine, alerts and database:
 
 ```bash
-python -m tablewatch simulate --hours 3          # writes a synthetic 3-hour service to data/tablewatch.db
-python -m tablewatch dashboard                   # http://localhost:8501
+python -m tablewatch simulate --hours 3          # writes a synthetic service to data/tablewatch.db
+python -m tablewatch dashboard                   # opens http://localhost:8501
 ```
 
-To watch it unfold live, run `python -m tablewatch simulate --hours 1 --live --speed 30` in one terminal and the dashboard in another.
+The run has finished, so the dashboard opens in **Replay**. Drag the replay slider to scrub through the evening. To watch tables change live, run `python -m tablewatch simulate --hours 1 --live --speed 30` in one terminal and the dashboard in another, then pick the newest run in the sidebar.
+
+**B. The vision pipeline, on a public test clip.** OpenCV's pedestrian clip isn't a restaurant, so `config/demo_video.yaml` draws three pretend "tables" on a walkway and shortens the timers. People walking through then trigger state changes and alerts:
+
+```bash
+curl -L -o data/vtest.avi https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi
+python -m tablewatch --config config/demo_video.yaml run       # ~80 s of video; writes outputs/demo_video_annotated.mp4
+python -m tablewatch --config config/demo_video.yaml report    # metrics table in the terminal
+python -m tablewatch dashboard --db data/demo_video.db
+```
+
+Open `outputs/demo_video_annotated.mp4` in VLC. It's MPEG-4, which most browsers won't play. You'll see people boxed as staff or guest, zones coloured by state with their timers, and heads blurred. Walkers get tagged as staff because of the "distance walked" rule.
+
+**C. In the browser, with nothing installed (GitHub Codespaces).** On the repo page, go to **Code → Codespaces → Create codespace on this branch**. The first build installs everything (about 5 minutes) and generates the simulated service. The dashboard then opens in a preview tab on port 8501, and step B works in the Codespace terminal too. The zone-drawing window needs a desktop, so draw zones for your own footage on your own machine.
+
+**D. Your own restaurant footage.** Follow steps 1–4 below.
 
 ## 1. Get a sample restaurant clip from Pexels
 
