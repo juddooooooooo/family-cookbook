@@ -1,0 +1,166 @@
+"""Service metrics computed from sittings and visits.
+
+Pure functions over `Sitting` / `Visit` records so the same code serves the
+live pipeline, the dashboard (records loaded from SQLite) and the tests.
+Open sittings (still in progress, or cut off by the end of a video) are
+measured up to `now` and flagged `is_open`.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from statistics import mean
+
+from tablewatch.state.table_state import Sitting, TableState, Visit
+
+
+@dataclass
+class SittingMetrics:
+    table_id: str
+    sitting_key: str
+    seated_at: float
+    ended_at: float | None
+    is_open: bool
+    duration_s: float  # table turn time (so far, if open)
+    visit_count: int
+    time_to_first_visit_s: float | None
+    visit_gaps_s: list[float] = field(default_factory=list)  # end of one visit -> start of the next
+    time_to_food_s: float | None = None
+
+    @property
+    def max_gap_s(self) -> float | None:
+        return max(self.visit_gaps_s) if self.visit_gaps_s else None
+
+    @property
+    def mean_gap_s(self) -> float | None:
+        return mean(self.visit_gaps_s) if self.visit_gaps_s else None
+
+
+@dataclass
+class IdlePeriod:
+    table_id: str
+    start: float
+    end: float
+    is_open: bool  # still empty at `now`
+
+    @property
+    def duration_s(self) -> float:
+        return max(0.0, self.end - self.start)
+
+
+@dataclass
+class TableSummary:
+    table_id: str
+    sittings: int
+    completed_sittings: int
+    visits: int
+    avg_time_to_first_visit_s: float | None
+    max_time_to_first_visit_s: float | None
+    avg_visit_gap_s: float | None
+    max_visit_gap_s: float | None
+    avg_visits_per_sitting: float | None
+    avg_turn_time_s: float | None  # completed sittings only
+    idle_s: float
+    occupied_s: float
+
+    @property
+    def utilisation(self) -> float | None:
+        total = self.idle_s + self.occupied_s
+        return self.occupied_s / total if total > 0 else None
+
+
+def _visits_for(sitting: Sitting, visits: Iterable[Visit]) -> list[Visit]:
+    return sorted((v for v in visits if v.sitting_key == sitting.key), key=lambda v: v.start)
+
+
+def sitting_metrics(sitting: Sitting, visits: Iterable[Visit], now: float) -> SittingMetrics:
+    own = _visits_for(sitting, visits)
+    end = sitting.ended_at if sitting.ended_at is not None else now
+    gaps = []
+    for prev, cur in zip(own, own[1:]):
+        if prev.end is not None:
+            gaps.append(max(0.0, cur.start - prev.end))
+    return SittingMetrics(
+        table_id=sitting.table_id,
+        sitting_key=sitting.key,
+        seated_at=sitting.seated_at,
+        ended_at=sitting.ended_at,
+        is_open=sitting.ended_at is None,
+        duration_s=max(0.0, end - sitting.seated_at),
+        visit_count=len(own),
+        time_to_first_visit_s=max(0.0, own[0].start - sitting.seated_at) if own else None,
+        visit_gaps_s=gaps,
+        time_to_food_s=(
+            max(0.0, sitting.food_served_at - sitting.seated_at) if sitting.food_served_at is not None else None
+        ),
+    )
+
+
+def idle_periods(table_id: str, sittings: Iterable[Sitting], run_start: float, now: float) -> list[IdlePeriod]:
+    """Stretches where the table had no sitting, from the start of the run to `now`."""
+    periods = []
+    cursor: float | None = run_start
+    for s in sorted((s for s in sittings if s.table_id == table_id), key=lambda s: s.seated_at):
+        if cursor is not None and s.seated_at > cursor:
+            periods.append(IdlePeriod(table_id, cursor, s.seated_at, is_open=False))
+        cursor = s.ended_at  # None while the sitting is still open
+    if cursor is not None and now > cursor:
+        periods.append(IdlePeriod(table_id, cursor, now, is_open=True))
+    return periods
+
+
+def _avg(values: list[float]) -> float | None:
+    return mean(values) if values else None
+
+
+def table_summary(
+    table_id: str, sittings: Iterable[Sitting], visits: Iterable[Visit], run_start: float, now: float
+) -> TableSummary:
+    sittings = [s for s in sittings if s.table_id == table_id]
+    visits = [v for v in visits if v.table_id == table_id]
+    per = [sitting_metrics(s, visits, now) for s in sittings]
+    firsts = [m.time_to_first_visit_s for m in per if m.time_to_first_visit_s is not None]
+    gaps = [g for m in per for g in m.visit_gaps_s]
+    done = [m for m in per if not m.is_open]
+    idle = sum(p.duration_s for p in idle_periods(table_id, sittings, run_start, now))
+    return TableSummary(
+        table_id=table_id,
+        sittings=len(per),
+        completed_sittings=len(done),
+        visits=sum(m.visit_count for m in per),
+        avg_time_to_first_visit_s=_avg(firsts),
+        max_time_to_first_visit_s=max(firsts) if firsts else None,
+        avg_visit_gap_s=_avg(gaps),
+        max_visit_gap_s=max(gaps) if gaps else None,
+        avg_visits_per_sitting=_avg([m.visit_count for m in per]),
+        avg_turn_time_s=_avg([m.duration_s for m in done]),
+        idle_s=idle,
+        occupied_s=sum(m.duration_s for m in per),
+    )
+
+
+def state_at(table_id: str, t: float, sittings: Iterable[Sitting], visits: Iterable[Visit]) -> tuple[TableState, float | None]:
+    """Reconstruct a table's state at time `t` from stored records (for replay).
+
+    Returns (state, since) where `since` is when that state began, or None if
+    the table has been empty since before the first record.
+    """
+    sitting = None
+    last_end = None
+    for s in sittings:
+        if s.table_id != table_id:
+            continue
+        if s.seated_at <= t and (s.ended_at is None or t < s.ended_at):
+            sitting = s
+        elif s.ended_at is not None and s.ended_at <= t:
+            last_end = s.ended_at if last_end is None else max(last_end, s.ended_at)
+    if sitting is None:
+        return TableState.EMPTY, last_end
+    own = [v for v in _visits_for(sitting, visits) if v.start <= t]
+    if not own:
+        return TableState.SEATED, sitting.seated_at
+    latest = own[-1]
+    if latest.end is None or t < latest.end:
+        return TableState.ATTENDED, latest.start
+    return TableState.WAITING, latest.end
